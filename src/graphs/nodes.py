@@ -1,9 +1,12 @@
 import json
 import os
+from typing import List, Dict, Any
 from langchain_groq import ChatGroq
 from dotenv import load_dotenv
-from src.structure import RepoState, ProcessQueryResponse
-from src.workflow import WorkFlow
+from src.structures.structure import RepoState, ProcessQueryResponse
+from src.githubprocessing import github_fetcher
+from src.database import db_processing
+from src.search import web_search
 
 load_dotenv(override=True)
 
@@ -116,9 +119,8 @@ Respond in this structure:
 
 def router(state: RepoState):
     process_llm = router_llm.with_structured_output(ProcessQueryResponse)
-    formatted_history = WorkFlow.format_history(state['messages'])
+    formatted_history = format_history(state['messages'])
     result = process_llm.invoke(router_prompt.format(query=state["query"], history=formatted_history))
-    print(state["query"] + " | "+result['category'])
     new_query = state["query"]
     repo_link = ""
     if result['category'] == 'repo_specific':
@@ -131,17 +133,18 @@ def decline(state: RepoState):
     return {**state, 'response': response.content}
 
 def chunk_and_index(state: RepoState):
-    owner, repo = WorkFlow.extract_owner_repo(url=state['repo_link'])
+    owner, repo = github_fetcher.extract_owner_repo(url=state['repo_link'])
     if owner and repo:
-        if not WorkFlow.check_repo_present_in_db(owner=owner, repo=repo):
-            all_files = WorkFlow.get_github_repo(owner=owner, repo=repo)
-            chunks = WorkFlow.get_codebase_chunks(all_files)
-            WorkFlow.save_to_db(owner=owner, repo=repo, chunks=chunks)
+        if not db_processing.check_repo_present_in_db(owner=owner, repo=repo):
+            # all_files = WorkFlow.get_github_repo(owner=owner, repo=repo)
+            # chunks = WorkFlow.get_codebase_chunks(all_files)
+            chunks = github_fetcher.get_github_repo_chunks(owner=owner, repo=repo)
+            db_processing.save_to_db(owner=owner, repo=repo, chunks=chunks)
     return {**state}
 
 def search_web(state: RepoState):
     web_results = []
-    search_result = WorkFlow.search_web(state['query'])
+    search_result = web_search.search_web(state['query'])
     results = search_result.get('results', [])
     for item in results:
         web_results.append({
@@ -151,13 +154,13 @@ def search_web(state: RepoState):
     return {**state, 'web_results': web_results}
 
 def search_db(state: RepoState):
-    db_result = WorkFlow.fetch_from_db(query=state['query'], repo_url=state['repo_link'])
+    db_result = db_processing.query_db(query=state['query'], repo_url=state['repo_link'])
     return {**state, 'retrieved_chunks': db_result}
 
 def final_response(state: RepoState):
     response = ''
     history = state['messages']
-    formatted_history = WorkFlow.format_history(history)
+    formatted_history = format_history(history)
     if state['category'] == 'coding':
         response += synthesizer_llm.invoke(web_query_prompt.format(query=state['query'], web_results=json.dumps(state['web_results']), history=formatted_history)).content
 
@@ -173,6 +176,10 @@ def final_response(state: RepoState):
     })
     return {**state, 'response': response, 'messages': history}
 
-
+def format_history(history: List[Dict[str,str]]):
+    formatted_history = ''
+    for conv in history:
+        formatted_history += f'role: {conv['role']}\ncontent: {conv['content']}\n'
+    return formatted_history
 
 

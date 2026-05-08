@@ -10,7 +10,8 @@ from tavily import TavilyClient
 from qdrant_client import QdrantClient
 from sentence_transformers import SentenceTransformer
 from qdrant_client.models import PointStruct, Filter, FieldCondition, MatchValue, VectorParams, Distance,PayloadSchemaType
-from src.ast_chunking import chunk_code_file
+from src.backend.ast_chunking import chunk_code_file
+from concurrent.futures import ThreadPoolExecutor, as_completed
 load_dotenv(override=True)
 
 GITHUB_API_KEY=os.getenv('GITHUB_API_KEY')
@@ -20,8 +21,13 @@ TAVILY_API_KEY=os.getenv('TAVILY_API_KEY')
 
 MAX_FILE_SIZE_KB=500
 MAX_FILES=300
-SUPPORTED_EXTENSIONS = {'.py', '.js', '.ts', '.jsx', '.tsx','.java', '.go', '.rs', '.cpp', '.c', '.cs', '.md'}
-
+SUPPORTED_EXTENSIONS = {
+    '.py', '.js', '.ts', '.jsx', '.tsx','.java', 
+    '.go', '.rs', '.cpp', '.c', '.cs', '.md'}
+SKIP_PATTERNS = {
+    "node_modules/", "dist/", "build/", ".git/", "__pycache__/",
+    "vendor/", "migrations/", ".min.js", ".bundle.js", ".venv/", 'venv/'
+}
 tavily_client = TavilyClient(api_key=TAVILY_API_KEY)
 response = tavily_client.search("Who is Leo Messi?")
 
@@ -32,17 +38,13 @@ encoder = SentenceTransformer(EMBEDDING_MODEL)
 auth = Auth.Token(GITHUB_API_KEY)
 g = Github(auth=auth)
 
-# connect to Qdrant Cloud
-# client = QdrantClient(
-#     url=QDRANT_CLUSTER,
-#     api_key=QDRANT_API_KEY,
-#     cloud_inference=True
-# )
+SKIP_PATTERNS = {
+    "node_modules/", "dist/", "build/", ".git/", "__pycache__/",
+    "vendor/", "migrations/", ".min.js", ".bundle.js", ".venv/", 'venv/'
+}
 
 path="./qdrant_data"
 client = QdrantClient(path=path)
-
-
 collections = [c.name for c in client.get_collections().collections]
 # create collection
 if COLLECTION_NAME not in collections:
@@ -84,14 +86,6 @@ class WorkFlow:
             return None, None
 
     @staticmethod
-    def fetch_repo(owner: str, repo: str) -> list:
-        if owner and repo:
-            contents = WorkFlow.get_github_repo(owner, repo)
-            return contents
-        else:
-            return []
-
-    @staticmethod
     def check_repo_present_in_db(owner: str, repo: str,) -> bool:        
         repo_filter = Filter(
             must=[
@@ -109,6 +103,14 @@ class WorkFlow:
         else:
             return False
 
+    @staticmethod
+    def fetch_repo(owner: str, repo: str) -> list:
+        if owner and repo:
+            contents = WorkFlow.get_github_repo(owner, repo)
+            return contents
+        else:
+            return []
+        
     @staticmethod
     def get_github_repo(owner: str, repo: str, branch: str = 'main'):
 
@@ -143,7 +145,40 @@ class WorkFlow:
         return files
 
     @staticmethod
-    def get_codebase_chunks(files: List[any]):
+    def get_github_repo_chunks(owner: str, repo: str, branch: str = 'main'):
+        repo = g.get_repo(f"{owner}/{repo}")
+        contents = repo.get_git_tree(branch, recursive=True).tree
+
+        def fetch_and_chunk(item) -> list[dict] | None:
+            file_content = repo.get_contents(item.path, ref=branch)
+            code = base64.b64decode(file_content.content).decode('utf-8', errors='ignore')
+
+            ext = Path(item.path).suffix
+            file = {
+                "path": item.path,
+                "content": code,
+                "language": ext.lstrip('.'),
+                "size": item.size,
+                "repo": repo,
+                "branch": branch
+            }
+
+            if should_skip(file):
+                return None
+            
+            return chunk_code_file(file)
+        
+        all_chunks = []
+        with ThreadPoolExecutor(max_workers=10) as executor:
+            futures = {executor.submit(fetch_and_chunk, item): item for item in contents}
+            for future in as_completed(futures):
+                result = future.result()
+                if result:
+                    all_chunks.append(result)
+        return all_chunks
+
+    @staticmethod
+    def get_codebase_chunks(files: List[Any]):
         chunks = []
         for file in files:
             chunks.extend(chunk_code_file(file))
@@ -218,7 +253,15 @@ def get_ticks():
 
 
 
-
+def should_skip(file: dict) -> bool:
+    path = file["path"].lower()
+    if Path(file["path"]).suffix in SKIP_EXTENSIONS:
+        return True
+    if any(pat in path for pat in SKIP_PATTERNS):
+        return True
+    if len(file["content"].strip()) < 50:   # empty/trivial files
+        return True
+    return False
 
 
 

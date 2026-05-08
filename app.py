@@ -1,11 +1,13 @@
-from src.graph import handle_query
-from fastapi import FastAPI, Response, Form
+from src.graphs.graph import handle_query
+from fastapi import FastAPI, Response, Form, Depends, Request, HTTPException
 from typing import Annotated
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+
 import uvicorn
 
 app=FastAPI()
+#app.state.limiter = limiter
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -24,10 +26,4 @@ async def query(query: Annotated[str, Form()]):
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=15000)
-    
-    # while True:
-    #     query = input("Enter your query: ")
-    #     response = handle_query(query)
-    #     print(response)
-    #     print('\n\n')
 
