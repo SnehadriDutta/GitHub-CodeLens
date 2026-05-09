@@ -91,10 +91,9 @@ def query_db(query: str, repo_url: str, limit: int = 5):
         )
 
         points = results.points
-        pairs = [(query, p.payload) for p in points]
+        pairs = [(query, p.payload.get('content', '')) for p in points]
         scores = reranker.predict(pairs)
         reranked = sorted(zip(scores, points), key=lambda x: x[0], reverse=True)[:limit]
-
     return reranked
 
 def get_ticks():

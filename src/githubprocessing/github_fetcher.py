@@ -21,6 +21,7 @@ SKIP_PATTERNS = {
     "vendor/", "migrations/", ".min.js", ".bundle.js", ".venv/", 'venv/'
 }
 
+github_ingested = []
 
 auth = Auth.Token(GITHUB_API_KEY)
 g = Github(auth=auth)
@@ -34,7 +35,6 @@ def extract_owner_repo(url: str):
     else:
         return None, None
 
-
 def get_github_repo_chunks(owner: str, repo: str, branch: str = 'main'):
     repo = g.get_repo(f"{owner}/{repo}")
     contents = repo.get_git_tree(branch, recursive=True).tree
@@ -45,6 +45,8 @@ def get_github_repo_chunks(owner: str, repo: str, branch: str = 'main'):
         all_contents = file_contents if isinstance(file_contents, list) else [file_contents]
         chunks = []
         for item in all_contents:
+            if item.content is None:
+                continue
             code = base64.b64decode(item.content).decode('utf-8', errors='ignore')
 
             ext = Path(repo_path).suffix
@@ -69,6 +71,12 @@ def get_github_repo_chunks(owner: str, repo: str, branch: str = 'main'):
             result = future.result()
             if result:
                 all_chunks.extend(result)
+
+    github_ingested.append({
+        "owner": owner,
+        'repo': repo
+    })
+
     return all_chunks
 
 def should_skip(file: dict) -> bool:

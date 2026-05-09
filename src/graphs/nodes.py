@@ -1,3 +1,4 @@
+import re
 import json
 import os
 from typing import List, Dict, Any
@@ -29,12 +30,14 @@ synthesizer_llm = ChatGroq(
 router_prompt = """
 You are a query classifier. Classify the input query into exactly one category.
 
+Repo Link: {repo_link}
+
 CATEGORIES:
 
 1. "repo_specific"
-   REQUIRED: query must contain a valid GitHub URL (https://github.com/<user>/<repo>)
+   REQUIRED: Repo Link must contain a valid GitHub URL (https://github.com/<user>/<repo>)
    AND asks anything about that repo (explain, fix, add feature, review, etc.)
-   Example: "explain the auth flow https://github.com/org/project"
+   
 
 2. "coding"
    ANY query that involves:
@@ -58,6 +61,8 @@ DECISION RULES:
 
 Query: {query}
 History: {history}
+
+Respond with exactly one word: "repo_specific", "coding", or "decline". Nothing else.
 """
 
 decline_prompt = """
@@ -118,29 +123,17 @@ Respond in this structure:
 """
 
 def router(state: RepoState):
-    process_llm = router_llm.with_structured_output(ProcessQueryResponse)
     formatted_history = format_history(state['messages'])
-    result = process_llm.invoke(router_prompt.format(query=state["query"], history=formatted_history))
-    new_query = state["query"]
-    repo_link = ""
-    if result['category'] == 'repo_specific':
-        new_query = result['query']
-        repo_link = result['github_link']    
-    return {**state, 'query': new_query, 'category': result['category'], 'repo_link': repo_link}
+    result = router_llm.invoke(router_prompt.format(query=state["query"], history=formatted_history,
+                                                     repo_link=state['repo_link']))
+    category = result.content
+    if not state['repo_link'] and category == 'repo_specific':
+        category = 'coding'
+    return {**state, 'category': category}
 
 def decline(state: RepoState):
     response = router_llm.invoke(decline_prompt.format(query=state['query']))
     return {**state, 'response': response.content}
-
-def chunk_and_index(state: RepoState):
-    owner, repo = github_fetcher.extract_owner_repo(url=state['repo_link'])
-    if owner and repo:
-        if not db_processing.check_repo_present_in_db(owner=owner, repo=repo):
-            # all_files = WorkFlow.get_github_repo(owner=owner, repo=repo)
-            # chunks = WorkFlow.get_codebase_chunks(all_files)
-            chunks = github_fetcher.get_github_repo_chunks(owner=owner, repo=repo)
-            db_processing.save_to_db(owner=owner, repo=repo, chunks=chunks)
-    return {**state}
 
 def search_web(state: RepoState):
     web_results = []
@@ -162,10 +155,17 @@ def final_response(state: RepoState):
     history = state['messages']
     formatted_history = format_history(history)
     if state['category'] == 'coding':
-        response += synthesizer_llm.invoke(web_query_prompt.format(query=state['query'], web_results=json.dumps(state['web_results']), history=formatted_history)).content
-
+        response += synthesizer_llm.invoke(web_query_prompt.format(query=state['query'],
+                                                                   web_results=json.dumps(state['web_results']),
+                                                                   history=formatted_history)).content
     elif state['category'] == 'repo_specific':
-        response += synthesizer_llm.invoke(github_based_prompt.format(query=state['query'], github_results=json.dumps(state['retrieved_chunks']), history=formatted_history)).content
+        chunks_for_prompt = [
+            {"score": round(float(score), 4), "content": point.payload.get("content", "")}
+            for score, point in state['retrieved_chunks']
+        ]
+        response += synthesizer_llm.invoke(github_based_prompt.format(query=state['query'],
+                                                                      github_results=json.dumps(chunks_for_prompt),
+                                                                      history=formatted_history)).content
     history.append({
         'role' : 'user',
         'content' : state['query']
