@@ -1,3 +1,5 @@
+import json
+import time
 from src.graphs.nodes import *
 from src.structures.structure import RepoState
 from langgraph.graph import StateGraph, END
@@ -48,8 +50,13 @@ def ingest_and_save_repo(github_link: str) -> JSONResponse:
     owner, repo = github_fetcher.extract_owner_repo(github_link)
     if owner and repo:
         if not db_processing.check_repo_present_in_db(owner=owner, repo=repo):
-            chunks = github_fetcher.get_github_repo_chunks(owner=owner, repo=repo)
+            t0 = time.time()
+            chunks = github_fetcher.get_github_repo_chunks(owner=owner, repo_name=repo)
+            print(f"fetch: {time.time() - t0:.2f}s, chunks: {len(chunks)}")
+
+            t1 = time.time()
             db_processing.save_to_db(owner=owner, repo=repo, chunks=chunks)
+            print(f"save_to_db: {time.time() - t1:.2f}s")
         github_fetcher.github_ingested.append({
             "owner": owner,
             'repo': repo

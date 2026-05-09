@@ -1,4 +1,6 @@
+import json
 import re
+from concurrent.futures.thread import ThreadPoolExecutor
 from datetime import datetime
 from typing import List, Any
 from qdrant_client import QdrantClient
@@ -53,19 +55,19 @@ def check_repo_present_in_db(owner: str, repo: str,) -> bool:
         return False
 
 def save_to_db(owner: str, repo:str,chunks:List[Any]):
-    points = []
-    for chunk in chunks:
+    def embed_chunk(chunk):
         dense_vec, sparse_vec = embed(chunk['text'])
         point = PointStruct(
             id=get_ticks(),
             vector={'dense': dense_vec, 'sparse': sparse_vec},
             payload={**chunk, 'owner': owner, 'repo': repo, }
         )
-        points.append(point)
-    client.upsert(
-        collection_name=COLLECTION_NAME,
-        points=points
-    )
+        return point
+    with ThreadPoolExecutor(max_workers=20) as executor:
+        points = list(executor.map(embed_chunk, chunks))
+
+    for i in range(0, len(points), 100):
+        client.upsert(collection_name=COLLECTION_NAME, points=points[i:i+100])
 
 def query_db(query: str, repo_url: str, limit: int = 5):
     dense_vec, sparse_vec = embed(query)
@@ -89,9 +91,8 @@ def query_db(query: str, repo_url: str, limit: int = 5):
             with_payload=True,
             limit=20
         )
-
         points = results.points
-        pairs = [(query, p.payload.get('content', '')) for p in points]
+        pairs = [(query, p.payload.get('text', '')) for p in points]
         scores = reranker.predict(pairs)
         reranked = sorted(zip(scores, points), key=lambda x: x[0], reverse=True)[:limit]
     return reranked
@@ -117,7 +118,20 @@ def extract_owner_repo(url: str):
 
 
 
-
+# def save_to_db(owner: str, repo:str,chunks:List[Any]):
+#     points = []
+#     for chunk in chunks:
+#         dense_vec, sparse_vec = embed(chunk['text'])
+#         point = PointStruct(
+#             id=get_ticks(),
+#             vector={'dense': dense_vec, 'sparse': sparse_vec},
+#             payload={**chunk, 'owner': owner, 'repo': repo, }
+#         )
+#         points.append(point)
+#     client.upsert(
+#         collection_name=COLLECTION_NAME,
+#         points=points
+#     )
 
 
 

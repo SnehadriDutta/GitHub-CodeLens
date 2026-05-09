@@ -35,12 +35,28 @@ def extract_owner_repo(url: str):
     else:
         return None, None
 
-def get_github_repo_chunks(owner: str, repo: str, branch: str = 'main'):
-    repo = g.get_repo(f"{owner}/{repo}")
-    contents = repo.get_git_tree(branch, recursive=True).tree
-    paths = [item.path for item in contents]
+def get_github_repo_chunks(owner: str, repo_name: str, branch: str = 'main'):
+    repo = g.get_repo(f"{owner}/{repo_name}")
+    tree = repo.get_git_tree(branch, recursive=True)
+    paths = []
+    if tree.truncated:
+        def traverse(path=""):
+            for item in repo.get_contents(path, ref=branch):
+                if item.type == "dir":
+                    traverse(item.path)
+                else:
+                    paths.append(item.path)
+
+        traverse()
+    else:
+        paths = [item.path for item in tree.tree if item.type == "blob"]
 
     def fetch_and_chunk(repo_path: str) -> list[dict] | None:
+        path_lower = repo_path.lower()
+        if Path(repo_path).suffix not in SUPPORTED_EXTENSIONS:
+            return None
+        if any(pat in path_lower for pat in SKIP_PATTERNS):
+            return None
         file_contents = repo.get_contents(repo_path, ref=branch)
         all_contents = file_contents if isinstance(file_contents, list) else [file_contents]
         chunks = []
@@ -58,9 +74,6 @@ def get_github_repo_chunks(owner: str, repo: str, branch: str = 'main'):
                 "branch": branch
             }
 
-            if should_skip(file):
-                return None
-
             chunks.extend(chunk_code_file(file))
         return chunks
 
@@ -71,13 +84,14 @@ def get_github_repo_chunks(owner: str, repo: str, branch: str = 'main'):
             result = future.result()
             if result:
                 all_chunks.extend(result)
-
     github_ingested.append({
         "owner": owner,
         'repo': repo
     })
 
     return all_chunks
+
+
 
 def should_skip(file: dict) -> bool:
     path = file["path"].lower()
@@ -88,6 +102,7 @@ def should_skip(file: dict) -> bool:
     if len(file["content"].strip()) < 50:   # empty/trivial files
         return True
     return False
+
 
 
 

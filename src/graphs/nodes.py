@@ -160,7 +160,7 @@ def final_response(state: RepoState):
                                                                    history=formatted_history)).content
     elif state['category'] == 'repo_specific':
         chunks_for_prompt = [
-            {"score": round(float(score), 4), "content": point.payload.get("content", "")}
+            {"score": round(float(score), 4), "content": point.payload.get("text", "")}
             for score, point in state['retrieved_chunks']
         ]
         response += synthesizer_llm.invoke(github_based_prompt.format(query=state['query'],
