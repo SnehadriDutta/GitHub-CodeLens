@@ -1,3 +1,7 @@
+import asyncio
+
+import aiohttp
+from Demos.win32ts_logoff_disconnected import session
 from github import Auth, Github
 from pathlib import Path
 import json
@@ -34,6 +38,62 @@ def extract_owner_repo(url: str):
         return match.group(1), match.group(2)
     else:
         return None, None
+
+async def get_github_repo_chunks_aiohttp(owner: str, repo_name: str, branch: str = 'main'):
+    repo = g.get_repo(f"{owner}/{repo_name}")
+    tree = repo.get_git_tree(branch, recursive=True)
+    paths = []
+    if tree.truncated:
+        def traverse(path=""):
+            for item in repo.get_contents(path, ref=branch):
+                if item.type == "dir":
+                    traverse(item.path)
+                else:
+                    paths.append(item.path)
+
+        traverse()
+    else:
+        paths = [item.path for item in tree.tree if item.type == "blob"]
+
+    filtered_path = [
+        p for p in paths
+        if Path(p).suffix in SUPPORTED_EXTENSIONS
+           and not any(pat in p.lower() for pat in SKIP_PATTERNS)
+    ]
+
+    async def fetch_and_chunk(session: aiohttp.ClientSession, repo_path: str) -> list[dict] | None:
+        url = f"https://raw.githubusercontent.com/{owner}/{repo_name}/{branch}/{repo_path}"
+        async with session.get(url) as resp:
+            if resp.status != 200:
+                return None
+            code = await resp.text(errors='ignore')
+            if len(code.strip()) < 50:
+                return None
+            file ={
+                "path": repo_path,
+                "content": code,
+                "language": Path(repo_path).suffix.lstrip('.'),
+                "repo": repo,
+                "branch": branch
+            }
+            return chunk_code_file(file)
+
+    async with aiohttp.ClientSession() as session:
+        results = await asyncio.gather(*[fetch_and_chunk(session, p) for p in filtered_path])
+
+
+    all_chunks = []
+    for r in results:
+        if r:
+            all_chunks.extend(r)
+
+    github_ingested.append({
+        "owner": owner,
+        'repo': repo
+    })
+
+    return all_chunks
+
 
 def get_github_repo_chunks(owner: str, repo_name: str, branch: str = 'main'):
     repo = g.get_repo(f"{owner}/{repo_name}")

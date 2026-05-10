@@ -4,14 +4,17 @@ import os
 from typing import List, Dict, Any
 from langchain_groq import ChatGroq
 from dotenv import load_dotenv
-from src.structures.structure import RepoState, ProcessQueryResponse
+from src.utils.structure import RepoState, ProcessQueryResponse
 from src.githubprocessing import github_fetcher
 from src.database import db_processing
 from src.search import web_search
+import tiktoken
+from src.utils.log import logger
 
 load_dotenv(override=True)
 
 GROQ_API_KEY=os.getenv('GROQ_API_KEY')
+tiktoken_enc = tiktoken.get_encoding("gpt2")
 
 router_llm = ChatGroq(
     api_key=GROQ_API_KEY,
@@ -22,7 +25,7 @@ router_llm = ChatGroq(
 
 synthesizer_llm = ChatGroq(
     api_key=GROQ_API_KEY,
-    model="openai/gpt-oss-20b",
+    model="llama-3.3-70b-versatile",
     temperature=0.5,
     max_tokens=1024
 )
@@ -127,6 +130,7 @@ def router(state: RepoState):
     result = router_llm.invoke(router_prompt.format(query=state["query"], history=formatted_history,
                                                      repo_link=state['repo_link']))
     category = result.content
+    category = re.search(r'\b(repo_specific|coding|decline)\b', category).group(1)
     if not state['repo_link'] and category == 'repo_specific':
         category = 'coding'
     return {**state, 'category': category}
@@ -151,21 +155,39 @@ def search_db(state: RepoState):
     return {**state, 'retrieved_chunks': db_result}
 
 def final_response(state: RepoState):
-    response = ''
     history = state['messages']
-    formatted_history = format_history(history)
-    if state['category'] == 'coding':
-        response += synthesizer_llm.invoke(web_query_prompt.format(query=state['query'],
-                                                                   web_results=json.dumps(state['web_results']),
-                                                                   history=formatted_history)).content
-    elif state['category'] == 'repo_specific':
-        chunks_for_prompt = [
-            {"score": round(float(score), 4), "content": point.payload.get("text", "")}
-            for score, point in state['retrieved_chunks']
-        ]
-        response += synthesizer_llm.invoke(github_based_prompt.format(query=state['query'],
-                                                                      github_results=json.dumps(chunks_for_prompt),
-                                                                      history=formatted_history)).content
+    web_result = state['web_results']
+    chunks_for_prompt = [
+        {"score": round(float(score), 4), "content": point.payload.get("text", "")}
+        for score, point in state['retrieved_chunks']
+    ]
+
+    def get_full_prompt(query:str, category: str, limit: int=5) -> str:
+        formatted_history = format_history(history[-limit:])
+        prompt=''
+        if category == 'coding':
+            prompt = web_query_prompt.format(query=query,
+                                             web_results=json.dumps(web_result[-limit:]),
+                                             history=formatted_history)
+        elif category == 'repo_specific':
+            prompt = github_based_prompt.format(query=query,
+                                                github_results=json.dumps(chunks_for_prompt[-limit:]),
+                                                history=formatted_history)
+        return prompt
+
+    limit = 5
+    while limit > 0:
+        full_prompt = get_full_prompt(state['query'], state['category'], limit)
+        if len(tiktoken_enc.encode(full_prompt)) < 8000:
+            break
+        limit -= 1
+    else:
+        full_prompt = state['query']
+
+    logger.info(f"Web result (limit: {limit}): {json.dumps(web_result[-limit:])}")
+    logger.info(f"DB result (limit: {limit}): {json.dumps(chunks_for_prompt[-limit:])}")
+    logger.debug(full_prompt.encode('ascii', 'replace').decode())
+    response = synthesizer_llm.invoke(full_prompt).content
     history.append({
         'role' : 'user',
         'content' : state['query']
