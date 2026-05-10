@@ -13,7 +13,8 @@ def search_web(query: str):
         # include_domains=["github.com", "stackoverflow.com"]
         search_depth="advanced",
         time_range="week",
-        chunks_per_source=5
+        chunks_per_source=5,
+        include_domains=["stackoverflow.com","github.com"]
     )
     return tavily_response
 
